@@ -3,37 +3,30 @@ import re
 from PyPDF2 import PdfReader
 from docx import Document
 from rouge_score import rouge_scorer
-from transformers import pipeline
 
-# -------------------------------
-# UI
-# -------------------------------
-st.set_page_config(page_title="AIML Project 2", layout="centered")
-st.title("📄 Intelligent Document Classification & Summarization")
-
-st.write(
-    "Upload a document to automatically identify its type, "
-    "generate a summary, and evaluate summary quality."
+# -------------------------------------------------
+# Streamlit Page Config
+# -------------------------------------------------
+st.set_page_config(
+    page_title="AIML Project 2 – Intelligent Document Analyzer",
+    layout="centered"
 )
 
-# -------------------------------
-# Load summarizer (cached)
-# -------------------------------
-@st.cache_resource
-def load_summarizer():
-    return pipeline("summarization", model="facebook/bart-large-cnn")
+st.title("📄 Intelligent Document Classification & Summarization")
+st.write(
+    "Upload a document to automatically identify its type, "
+    "generate a concise summary, and evaluate summary quality."
+)
 
-summarizer = load_summarizer()
-
-# -------------------------------
-# Utilities
-# -------------------------------
+# -------------------------------------------------
+# Text Extraction
+# -------------------------------------------------
 def extract_text(file):
     name = file.name.lower()
 
     if name.endswith(".pdf"):
         reader = PdfReader(file)
-        return " ".join(p.extract_text() or "" for p in reader.pages)
+        return " ".join(page.extract_text() or "" for page in reader.pages)
 
     elif name.endswith(".docx"):
         doc = Document(file)
@@ -48,59 +41,66 @@ def clean_text(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-# -------------------------------
-# DOCUMENT CLASSIFICATION (STABLE)
-# -------------------------------
+# -------------------------------------------------
+# DOCUMENT CLASSIFICATION (RULE-BASED, STABLE)
+# -------------------------------------------------
 def classify_document(text):
     t = text.lower()
 
-    if any(k in t for k in ["invoice", "gst", "total amount", "bill to"]):
+    if any(k in t for k in ["invoice", "gst", "bill to", "total amount", "tax"]):
         return "Invoice", 0.95
 
-    if any(k in t for k in ["resume", "skills", "experience", "education"]):
+    if any(k in t for k in ["resume", "curriculum vitae", "education", "skills", "experience"]):
         return "Resume", 0.95
 
-    if any(k in t for k in ["agreement", "hereby", "party", "clause"]):
+    if any(k in t for k in ["agreement", "hereby", "party of the", "clause", "act,"]):
         return "Legal Document", 0.95
 
-    if any(k in t for k in ["dear", "regards", "from:", "to:"]):
+    if any(k in t for k in ["dear", "regards", "from:", "to:", "subject:"]):
         return "Email", 0.95
 
-    return "Unknown / Mixed", 0.50
+    return "General / Mixed Document", 0.60
 
-def concise_summary(text, max_sentences=3):
-    sentences = re.split(r'(?<=[.!?]) +', text)
+# -------------------------------------------------
+# CONCISE, SECTION-AWARE SUMMARY
+# -------------------------------------------------
+def generate_summary(text, doc_type):
+    lines = [l.strip() for l in text.split(".") if len(l.strip()) > 40]
+    summary_lines = []
 
-    # Remove very short / useless sentences
-    sentences = [s for s in sentences if len(s.split()) > 6]
+    for line in lines:
+        l = line.lower()
 
-    if len(sentences) <= max_sentences:
-        return " ".join(sentences)
+        if doc_type == "Resume":
+            if any(k in l for k in ["experience", "skills", "education", "project"]):
+                summary_lines.append(line)
 
-    # Score sentences by keyword importance
-    keywords = [
-        "experience", "skills", "education", "invoice", "amount",
-        "agreement", "payment", "project", "responsibilities"
-    ]
+        elif doc_type == "Invoice":
+            if any(k in l for k in ["total", "amount", "gst", "invoice"]):
+                summary_lines.append(line)
 
-    scored = []
-    for s in sentences:
-        score = sum(1 for k in keywords if k in s.lower())
-        scored.append((score, s))
+        elif doc_type == "Legal Document":
+            if any(k in l for k in ["agreement", "obligation", "clause", "terms"]):
+                summary_lines.append(line)
 
-    # Sort by score and keep top sentences
-    scored.sort(reverse=True, key=lambda x: x[0])
-    top_sentences = [s for _, s in scored[:max_sentences]]
+        elif doc_type == "Email":
+            if any(k in l for k in ["request", "thank", "regards", "inform"]):
+                summary_lines.append(line)
 
-    return " ".join(top_sentences)
+    summary_lines = summary_lines[:3]
 
+    if summary_lines:
+        return ". ".join(summary_lines) + "."
+    else:
+        return "This document contains important information relevant to the identified category."
 
-# -------------------------------
-# ROUGE
-# -------------------------------
+# -------------------------------------------------
+# ROUGE SCORE
+# -------------------------------------------------
 def calculate_rouge(summary, original):
     scorer = rouge_scorer.RougeScorer(
-        ["rouge1", "rouge2", "rougeL"], use_stemmer=True
+        ["rouge1", "rouge2", "rougeL"],
+        use_stemmer=True
     )
     scores = scorer.score(original[:1000], summary)
     return {
@@ -109,19 +109,20 @@ def calculate_rouge(summary, original):
         "ROUGE-L": round(scores["rougeL"].fmeasure, 4),
     }
 
-# -------------------------------
+# -------------------------------------------------
 # UI FLOW
-# -------------------------------
+# -------------------------------------------------
 uploaded_file = st.file_uploader(
-    "Upload PDF / DOCX / TXT", type=["pdf", "docx", "txt"]
+    "Upload PDF / DOCX / TXT",
+    type=["pdf", "docx", "txt"]
 )
 
 if uploaded_file:
-    text = extract_text(uploaded_file)
-    text = clean_text(text)
+    raw_text = extract_text(uploaded_file)
+    text = clean_text(raw_text)
 
     if not text:
-        st.error("Could not extract text.")
+        st.error("Could not extract readable text from the document.")
     else:
         doc_type, confidence = classify_document(text)
 
@@ -129,11 +130,11 @@ if uploaded_file:
         st.write(f"**Type:** {doc_type}")
         st.write(f"**Confidence:** {confidence}")
 
-        st.subheader("📝 Document Summary")
-        summary = concise_summary(text)
+        st.subheader("📝 Concise Summary")
+        summary = generate_summary(text, doc_type)
         st.write(summary)
 
-        st.subheader("📊 ROUGE Scores")
-        rouge = calculate_rouge(summary, text)
-        for k, v in rouge.items():
+        st.subheader("📊 ROUGE Evaluation")
+        rouge_scores = calculate_rouge(summary, text)
+        for k, v in rouge_scores.items():
             st.write(f"{k}: {v}")
