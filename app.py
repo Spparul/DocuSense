@@ -68,12 +68,32 @@ def classify_document(text):
 
     return "Unknown / Mixed", 0.50
 
-# -------------------------------
-# SIMPLE EXTRACTIVE SUMMARY
-# -------------------------------
-def extractive_summary(text, max_sentences=5):
+def concise_summary(text, max_sentences=3):
     sentences = re.split(r'(?<=[.!?]) +', text)
-    return " ".join(sentences[:max_sentences])
+
+    # Remove very short / useless sentences
+    sentences = [s for s in sentences if len(s.split()) > 6]
+
+    if len(sentences) <= max_sentences:
+        return " ".join(sentences)
+
+    # Score sentences by keyword importance
+    keywords = [
+        "experience", "skills", "education", "invoice", "amount",
+        "agreement", "payment", "project", "responsibilities"
+    ]
+
+    scored = []
+    for s in sentences:
+        score = sum(1 for k in keywords if k in s.lower())
+        scored.append((score, s))
+
+    # Sort by score and keep top sentences
+    scored.sort(reverse=True, key=lambda x: x[0])
+    top_sentences = [s for _, s in scored[:max_sentences]]
+
+    return " ".join(top_sentences)
+
 
 # -------------------------------
 # ROUGE
@@ -110,7 +130,7 @@ if uploaded_file:
         st.write(f"**Confidence:** {confidence}")
 
         st.subheader("📝 Document Summary")
-        summary = extractive_summary(text)
+        summary = concise_summary(text)
         st.write(summary)
 
         st.subheader("📊 ROUGE Scores")
