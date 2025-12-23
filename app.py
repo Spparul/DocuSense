@@ -1,94 +1,110 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+import streamlit as st
+from transformers import pipeline
 from PyPDF2 import PdfReader
 from docx import Document
-from transformers import pipeline
 from rouge_score import rouge_scorer
 import io
-import re
 
-app = FastAPI()
-
-# Allow React frontend to connect
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:8080", "*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# -------------------------------
+# Page config
+# -------------------------------
+st.set_page_config(
+    page_title="Intelligent Document Analyzer",
+    layout="centered"
 )
 
-# Load AI models (downloads on first run)
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+st.title("📄 Intelligent Document Classification & Summarization")
+
+st.write(
+    "Upload a document (PDF, DOCX, or TXT) to classify its type, "
+    "generate a summary, and evaluate summary quality."
+)
+
+# -------------------------------
+# Load Models (cached)
+# -------------------------------
+@st.cache_resource
+def load_models():
+    classifier = pipeline(
+        "zero-shot-classification",
+        model="facebook/bart-large-mnli"
+    )
+    summarizer = pipeline(
+        "summarization",
+        model="facebook/bart-large-cnn"
+    )
+    return classifier, summarizer
+
+classifier, summarizer = load_models()
 
 DOCUMENT_TYPES = ["Invoice", "Resume", "Legal Document", "Email"]
 
-def extract_text(file: UploadFile) -> str:
-    """Extract text from PDF, DOCX, or TXT files"""
-    content = file.file.read()
-    filename = file.filename.lower()
-    
-    if filename.endswith('.pdf'):
-        reader = PdfReader(io.BytesIO(content))
-        return " ".join(page.extract_text() or "" for page in reader.pages)
-    elif filename.endswith('.docx'):
-        doc = Document(io.BytesIO(content))
-        return " ".join(para.text for para in doc.paragraphs)
-    elif filename.endswith('.txt') or filename.endswith('.eml'):
-        return content.decode('utf-8', errors='ignore')
+# -------------------------------
+# Utility functions
+# -------------------------------
+def extract_text(file):
+    name = file.name.lower()
+
+    if name.endswith(".pdf"):
+        reader = PdfReader(file)
+        return " ".join(p.extract_text() or "" for p in reader.pages)
+
+    elif name.endswith(".docx"):
+        doc = Document(file)
+        return " ".join(p.text for p in doc.paragraphs)
+
+    elif name.endswith(".txt"):
+        return file.read().decode("utf-8", errors="ignore")
+
     return ""
 
-def calculate_rouge(summary: str, original: str) -> dict:
-    """Calculate ROUGE scores"""
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+def calculate_rouge(summary, original):
+    scorer = rouge_scorer.RougeScorer(
+        ["rouge1", "rouge2", "rougeL"],
+        use_stemmer=True
+    )
     scores = scorer.score(original[:1000], summary)
     return {
-        "rouge1": round(scores['rouge1'].fmeasure, 4),
-        "rouge2": round(scores['rouge2'].fmeasure, 4),
-        "rougeL": round(scores['rougeL'].fmeasure, 4)
+        "ROUGE-1": round(scores["rouge1"].fmeasure, 4),
+        "ROUGE-2": round(scores["rouge2"].fmeasure, 4),
+        "ROUGE-L": round(scores["rougeL"].fmeasure, 4),
     }
 
-@app.post("/analyze")
-async def analyze_document(file: UploadFile = File(...)):
-    # Extract text
-    text = extract_text(file)
+# -------------------------------
+# UI: File Upload
+# -------------------------------
+uploaded_file = st.file_uploader(
+    "Upload Document",
+    type=["pdf", "docx", "txt"]
+)
+
+if uploaded_file:
+    text = extract_text(uploaded_file)
+
     if not text.strip():
-        return {"error": "Could not extract text from document"}
-    
-    # Truncate for models (they have token limits)
-    text_for_analysis = text[:4000]
-    
-    # Classify document type
-    classification = classifier(text_for_analysis, DOCUMENT_TYPES, multi_label=True)
-    predictions = [
-        {"type": label, "confidence": round(score, 4)}
-        for label, score in zip(classification['labels'], classification['scores'])
-    ]
-    
-    # Generate summary (BART has 1024 token limit)
-    text_for_summary = text[:2000]
-    summary_result = summarizer(
-        text_for_summary, 
-        max_length=200, 
-        min_length=50, 
-        do_sample=False
-    )
-    summary = summary_result[0]['summary_text']
-    
-    # Calculate ROUGE scores
-    rouge_scores = calculate_rouge(summary, text)
-    
-    return {
-        "filename": file.filename,
-        "textLength": len(text),
-        "predictions": predictions,
-        "topPrediction": predictions[0] if predictions else None,
-        "accuracy": predictions[0]['confidence'] if predictions else 0,
-        "summary": summary,
-        "rougeScores": rouge_scores
-    }
+        st.error("Could not extract text from the document.")
+    else:
+        st.subheader("🔍 Document Classification")
+        classification = classifier(text[:3000], DOCUMENT_TYPES)
 
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+        top_label = classification["labels"][0]
+        confidence = classification["scores"][0]
+
+        st.write(f"**Predicted Type:** {top_label}")
+        st.write(f"**Confidence:** {confidence:.4f}")
+
+        st.subheader("📝 Document Summary")
+        summary = summarizer(
+            text[:1500],
+            max_length=180,
+            min_length=50,
+            do_sample=False
+        )[0]["summary_text"]
+
+        st.write(summary)
+
+        st.subheader("📊 ROUGE Evaluation")
+        rouge_scores = calculate_rouge(summary, text)
+
+        for k, v in rouge_scores.items():
+            st.write(f"{k}: {v}")
