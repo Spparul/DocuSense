@@ -4,7 +4,7 @@ python-multipart==0.0.6
 PyPDF2==3.0.1
 python-docx==1.1.0
 transformers==4.37.0
-torch==2.1.2
+torch==2.2.2
 scikit-learn==1.4.0
 rouge-score==0.1.2
 sentencepiece==0.1.99
